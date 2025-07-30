@@ -1,63 +1,138 @@
-#define _WIN32_WINNT 0x0601    
+#define _WIN32_WINNT 0x0601        // Target Windows 7+ APIs
 #include <ws2tcpip.h>
 #include <stdio.h>
 #include <string.h>
 
-#pragma comment(lib, "ws2_32.lib")   
+#pragma comment(lib, "ws2_32.lib") // Link Winsock automatically
 
-#define PORT 8080
-#define BUFSZ 4096
+#define PORT 8080                  // Port the server listens on
+#define BUFSZ 4096                 // Receive‑buffer size
+#define HDR_END "\r\n\r\n"
+
+const char *get_user_agent(const char *buf) { 
+    char * start = strstr(buf, "User-Agent:");
+    if (!start) return NULL;
+
+    char * end   = strstr(start, "\r\n");
+    if (!end) return NULL; 
+
+    size_t len   = (size_t)(end - start);
+    char *ua     = malloc(len + 1);
+    if (!ua) return NULL;
+
+    memcpy(ua, start, len);
+    ua[len]      = '\0';
+
+    return ua;  
+} 
 
 void handle(int cfd) {
-    char buf[BUFSZ+1] = {0};
-    int n = recv(cfd, buf, BUFSZ, 0);
-    if (n <= 0) { closesocket(cfd); return; }
+    char buf[BUFSZ + 1] = {0};                     // +1 for NUL‑terminator
+    size_t used = 0;
+    while (used < BUFSZ) {
+        int n = recv(cfd, buf+used, BUFSZ - used, 0);    
+    /*  recv — pull raw bytes from the socket
+        cfd   : client “file descriptor” (socket handle)
+        buf   : destination buffer
+        BUFSZ : max bytes to copy
+        0     : default flags (blocking)
+        n     : bytes actually read, up to 0 means EOF/error            */
+
+        if (n <= 0) { closesocket(cfd); return; };
+        used += n;
+        
+        if (used >= 4 && strstr(buf, HDR_END)) break; 
+    };
+    
+
+    char * hdr_end = strstr(buf, HDR_END);
+    if (!hdr_end) { closesocket(cfd); return; }
+
+    size_t hdr_len = hdr_end + 4 - buf;    
+    char * body_ptr = buf + hdr_len; // pointer arithmetic: buf points at the start + hdr_len gives us start of the body
+    size_t body_have = used - hdr_len;
+
+    size_t body_need = 0;
+    {
+        char * cl = strstr(buf, "Content-Length:");
+        if (cl) body_need = strtoul(cl + 15, NULL, 10);
+    }
+
+    while (body_have < body_need && used < BUFSZ) {
+        int n = recv(cfd, buf + used, BUFSZ - used, 0);
+        if (n <= 0) { closesocket(cfd); return; }
+        used += n;
+        body_have += n;
+    }
 
     char method[8], path[256];
     if (sscanf(buf, "%7s %255s", method, path) != 2) {
+        /* sscanf parses the request line:
+           %7s  → method  (max 7 chars  + NUL)
+           %255s→ path    (max 255 chars + NUL)                     */
         closesocket(cfd); return;
     }
 
-
+    printf("Received request:\n%s\n", buf);
 
     const char *body, *status;
-    if (!strcmp(method, "GET") && !strcmp(path, "/hello")) {
-        body = "{\"msg\":\"world\"}";
+    if (!strcmp(method, "GET")  && !strcmp(path, "/hello")) {
+        body   = "{\"msg\":\"world\"}";
         status = "HTTP/1.1 200 OK\r\n";
         printf("GET /hello\n");
+    } else if (!strcmp(method, "POST") && !strcmp(path, "/echo")) {
+        body   = buf;
+        status = "HTTP/1.1 200 OK\r\n";
+        printf("POST /echo\n");
+    } else if (!strcmp(method, "POST") && !strcmp(path, "/user-agent")) {
+        body   = get_user_agent(buf);
+        status = "HTTP/1.1 200 OK\r\n";
+        printf("POST /user-agent\n");
     } else {
-        body = "{\"error\":\"not found\"}";
+        body   = "{\"error\":\"not found\"}";
         status = "HTTP/1.1 404 Not Found\r\n";
     }
 
     char hdr[256];
-    int len = snprintf(hdr, sizeof hdr,
-            "%sContent-Type: application/json\r\n"
-            "Content-Length: %zu\r\n"
-            "Connection: close\r\n\r\n",
-            status, strlen(body));
-    send(cfd, hdr, len, 0);
-    send(cfd, body, strlen(body), 0);
-    closesocket(cfd);
+    int len = snprintf(
+        hdr, sizeof hdr,
+        "%s"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n\r\n",
+        status, strlen(body));
+
+    /*  snprintf — safe sprintf
+        hdr   : output buffer
+        sizeof: capacity (inc. NUL)
+        returns bytes written (≥ capacity -> truncated)             */
+
+    send(cfd, hdr,  len,             0);           // send headers
+    send(cfd, body, strlen(body),    0);           // then body
+    closesocket(cfd);                              // done
 }
 
 int main(void) {
     WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2,2), &wsa)) return 1;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa)) return 1; // Init Winsock 2.2
 
     SOCKET sfd = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in addr = {0};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(PORT);
-    bind(sfd, (struct sockaddr*)&addr, sizeof addr);
-    listen(sfd, 8);
+
+    struct sockaddr_in addr = {
+        .sin_family      = AF_INET,    // IPv4
+        .sin_addr.s_addr = INADDR_ANY, // bind to all interfaces
+        .sin_port        = htons(PORT) // host‑to‑network‑short
+    };
+
+    bind(sfd, (struct sockaddr*)&addr, sizeof addr); // attach to port
+    listen(sfd, 8);                                  // queue up to 8 pending conns
 
     printf("Listening on :%d …\n", PORT);
     while (1) {
         SOCKET cfd = accept(sfd, NULL, NULL);
-        if (cfd == INVALID_SOCKET) continue;
-        handle(cfd);   /* single‑threaded demo */
+        if (cfd == INVALID_SOCKET) continue;        // ignore failed accepts
+        handle(cfd);                                // single‑threaded demo
     }
+
     WSACleanup();
 }
