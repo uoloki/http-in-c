@@ -1,13 +1,6 @@
-#define _WIN32_WINNT 0x0601        // Target Windows 7+ APIs
-#include <ws2tcpip.h>
-#include <stdio.h>
-#include <string.h>
+#include "server.h"
 
 #pragma comment(lib, "ws2_32.lib") // Link Winsock automatically
-
-#define PORT 8080                  // Port the server listens on
-#define BUFSZ 4096                 // Receive‑buffer size
-#define HDR_END "\r\n\r\n"
 
 const char *get_user_agent(const char *buf) { 
     char * start = strstr(buf, "User-Agent:");
@@ -26,7 +19,7 @@ const char *get_user_agent(const char *buf) {
     return ua;  
 } 
 
-void handle(int cfd) {
+void handle(SOCKET cfd) {
     char buf[BUFSZ + 1] = {0};                     // +1 for NUL‑terminator
     size_t used = 0;
     while (used < BUFSZ) {
@@ -44,7 +37,6 @@ void handle(int cfd) {
         if (used >= 4 && strstr(buf, HDR_END)) break; 
     };
     
-
     char * hdr_end = strstr(buf, HDR_END);
     if (!hdr_end) { closesocket(cfd); return; }
 
@@ -110,29 +102,4 @@ void handle(int cfd) {
     send(cfd, hdr,  len,             0);           // send headers
     send(cfd, body, strlen(body),    0);           // then body
     closesocket(cfd);                              // done
-}
-
-int main(void) {
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa)) return 1; // Init Winsock 2.2
-
-    SOCKET sfd = socket(AF_INET, SOCK_STREAM, 0);
-
-    struct sockaddr_in addr = {
-        .sin_family      = AF_INET,    // IPv4
-        .sin_addr.s_addr = INADDR_ANY, // bind to all interfaces
-        .sin_port        = htons(PORT) // host‑to‑network‑short
-    };
-
-    bind(sfd, (struct sockaddr*)&addr, sizeof addr); // attach to port
-    listen(sfd, 8);                                  // queue up to 8 pending conns
-
-    printf("Listening on :%d …\n", PORT);
-    while (1) {
-        SOCKET cfd = accept(sfd, NULL, NULL);
-        if (cfd == INVALID_SOCKET) continue;        // ignore failed accepts
-        handle(cfd);                                // single‑threaded demo
-    }
-
-    WSACleanup();
 }
