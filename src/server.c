@@ -68,6 +68,7 @@ void handle(SOCKET cfd) {
     printf("Received request:\n%s\n", buf);
 
     const char *body, *status;
+    int should_free_body = 0;
     if (!strcmp(method, "GET")  && !strcmp(path, "/hello")) {
         body   = "{\"msg\":\"world\"}";
         status = "HTTP/1.1 200 OK\r\n";
@@ -78,6 +79,12 @@ void handle(SOCKET cfd) {
         printf("POST /echo\n");
     } else if (!strcmp(method, "POST") && !strcmp(path, "/user-agent")) {
         body   = get_user_agent(buf);
+        if (!body) {
+            // Handle NULL return from get_user_agent
+            body = "{\"error\":\"User-Agent header not found\"}";
+        } else {
+            should_free_body = 1;  // Only free if we got malloc'd memory
+        }
         status = "HTTP/1.1 200 OK\r\n";
         printf("POST /user-agent\n");
     } else {
@@ -101,5 +108,9 @@ void handle(SOCKET cfd) {
 
     send(cfd, hdr,  len,             0);           // send headers
     send(cfd, body, strlen(body),    0);           // then body
+    if (should_free_body) {
+        free((void*)body);
+    }
+    
     closesocket(cfd);                              // done
 }
