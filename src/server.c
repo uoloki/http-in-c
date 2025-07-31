@@ -5,7 +5,7 @@
 static SOCKET queue[QSZ];                 // ring buffer of client sockets
 static LONG   head = 0, tail = 0;         // indices (atomic counters)
 
-static void q_push(SOCKET s)
+void q_push(SOCKET s)
 {
     LONG t = _InterlockedIncrement(&tail) - 1;
     /*

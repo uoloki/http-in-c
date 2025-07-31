@@ -14,7 +14,7 @@
 #define QSZ     1024
 
 static HANDLE sem;                        // kernel semaphore = #items in
-static void q_push(SOCKET s);
+void q_push(SOCKET s);
 DWORD WINAPI worker_proc(void *unused);
 const char *get_user_agent(const char *buf);
 void handle(SOCKET cfd);
