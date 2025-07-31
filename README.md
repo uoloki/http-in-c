@@ -1,0 +1,1 @@
+This is an implementation of a simple http-server in C, with Win API compatibility.
