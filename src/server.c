@@ -2,6 +2,41 @@
 
 #pragma comment(lib, "ws2_32.lib") // Link Winsock automatically
 
+static SOCKET queue[QSZ];                 // ring buffer of client sockets
+static LONG   head = 0, tail = 0;         // indices (atomic counters)
+
+static void q_push(SOCKET s)
+{
+    LONG t = _InterlockedIncrement(&tail) - 1;
+    /*
+    LONG WINAPI InterlockedIncrement(_Inout_ LONG volatile *Addend);
+    Locks the operation and adds one increment, returns old+1
+    */
+    queue[t % QSZ] = s;                         
+    /*
+    the counter doesn't reset, so we reduce it into array bounds
+    just in case
+    */
+    ReleaseSemaphore(sem, 1, NULL); // hand a permit back -> wake 1 worker
+}
+
+DWORD WINAPI worker_proc(void *unused)
+{
+    for (;;)
+    {
+        // Sleep until there’s at least 1 item in the queue
+        WaitForSingleObject(sem, INFINITE);
+
+        // Increment head so noone will touch the same socket
+        LONG h = _InterlockedIncrement(&head) - 1;
+        SOCKET s = queue[h % QSZ]; // keep the index inside queue
+
+        // Handle the HTTP transaction
+        handle(s);   // handle closes the socket
+    }
+    return 0;
+}
+
 const char *get_user_agent(const char *buf) { 
     char * start = strstr(buf, "User-Agent:");
     if (!start) return NULL;
@@ -60,8 +95,8 @@ void handle(SOCKET cfd) {
     char method[8], path[256];
     if (sscanf(buf, "%7s %255s", method, path) != 2) {
         /* sscanf parses the request line:
-           %7s  → method  (max 7 chars  + NUL)
-           %255s→ path    (max 255 chars + NUL)                     */
+           %7s  -> method  (max 7 chars  + NUL)
+           %255s-> path    (max 255 chars + NUL)                     */
         closesocket(cfd); return;
     }
 
@@ -97,8 +132,7 @@ void handle(SOCKET cfd) {
     /*  snprintf — safe sprintf
         hdr   : output buffer
         sizeof: capacity (inc. NUL)
-        returns bytes written (≥ capacity -> truncated)             */
-
+        returns bytes written (>= capacity -> truncated)             */
     send(cfd, hdr,  len,             0);           // send headers
     send(cfd, body, strlen(body),    0);           // then body
     closesocket(cfd);                              // done
